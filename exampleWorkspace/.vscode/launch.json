@@ -1,0 +1,36 @@
+{
+	// Use IntelliSense to learn about possible attributes.
+	// Hover to view descriptions of existing attributes.
+	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+	"version": "0.2.0",
+	"configurations": [
+		{
+			"type": "gdb-cobol",
+			"request": "launch",
+			"name": "Cobol Launch Program",
+			"target": "coll0.exe",
+			"cwd": "${workspaceRoot}\\debug\\",
+			"printCalls": false,
+			"internalConsoleOptions": "openOnSessionStart",
+			"showDevDebugOutput": false ,
+			"externalConsole": true,
+			"valuesFormatting": "prettyPrinters"
+		},
+		{
+			"type": "gdb-cobol",
+			"request": "launch",
+			"name": "SIFN Launch Program",
+			"target": "sifn790.exe",
+			"cwd": "d:/SIFN/testeMasterEmb/",
+			"showDevDebugOutput": false
+		},
+		{
+			"type": "gdb-cobol",
+			"request": "launch",
+			"name": "C Launch Program",
+			"target": "main.exe",
+			"cwd": "${workspaceRoot}\\debug\\",
+			"showDevDebugOutput": false
+		}
+	]
+}
