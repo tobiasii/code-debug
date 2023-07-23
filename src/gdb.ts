@@ -1,8 +1,9 @@
 import { MI2DebugSession, RunCommand } from './mibase';
 import { DebugSession, InitializedEvent, TerminatedEvent, StoppedEvent, OutputEvent, Thread, StackFrame, Scope, Source, Handles } from 'vscode-debugadapter';
 import { DebugProtocol } from 'vscode-debugprotocol';
-import { MI2, escape } from "./backend/mi2/mi2";
+import { escape } from "./backend/mi2/mi2";
 import { SSHArguments, ValuesFormattingMode } from './backend/backend';
+import { MI2_COB } from './backend/mi2/mi2cob';
 
 export interface LaunchRequestArguments extends DebugProtocol.LaunchRequestArguments {
 	cwd: string;
@@ -59,7 +60,7 @@ class GDBDebugSession extends MI2DebugSession {
 			this.sendErrorResponse(response, 104, `Configured debugger ${dbgCommand} not found.`);
 			return;
 		}
-		this.miDebugger = new MI2(dbgCommand, ["-q", "--interpreter=mi2"], args.debugger_args, args.env);
+		this.miDebugger = new MI2_COB(args.gdbpath || "gdb", ["-q", "--interpreter=mi3"], args.debugger_args, args.env);
 		this.setPathSubstitutions(args.pathSubstitutions);
 		this.initDebugger();
 		this.quit = false;
@@ -105,7 +106,7 @@ class GDBDebugSession extends MI2DebugSession {
 			this.sendErrorResponse(response, 104, `Configured debugger ${dbgCommand} not found.`);
 			return;
 		}
-		this.miDebugger = new MI2(dbgCommand, ["-q", "--interpreter=mi2"], args.debugger_args, args.env);
+		this.miDebugger = new MI2_COB(args.gdbpath || "gdb", ["-q", "--interpreter=mi3"], args.debugger_args, args.env);
 		this.setPathSubstitutions(args.pathSubstitutions);
 		this.initDebugger();
 		this.quit = false;
