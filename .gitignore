@@ -5,3 +5,15 @@ node_modules
 .nyc_output
 .vscode-test
 .secrets
+*.cls
+*.ins
+*.txt
+*.map
+*.grp
+*.lst
+*.idy
+*.dll
+*.obj
+*.def
+*.json
+*.exe
