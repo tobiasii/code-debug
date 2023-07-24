@@ -2,8 +2,9 @@ import { MI2, escape } from "./mi2";
 import { Breakpoint } from "../backend";
 import * as ChildProcess from "child_process";
 import * as path from "path";
+import { MI2_COB } from "./mi2cob";
 
-export class MI2_LLDB extends MI2 {
+export class MI2_LLDB extends MI2_COB {
 	protected initCommands(target: string, cwd: string, attach: boolean = false) {
 		// We need to account for the possibility of the path type used by the debugger being different
 		// than the path type where the extension is running (e.g., SSH from Linux to Windows machine).

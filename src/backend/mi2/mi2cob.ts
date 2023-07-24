@@ -1,20 +1,15 @@
-import { Breakpoint, Stack } from "../backend";
+import { Breakpoint, Stack , VariableObjectCobol } from "../backend";
 import * as Path from 'path'
 import { parseMI , MINode } from '../mi_parse';
 import { MI2 } from './mi2';
 import { Program } from "../cobolSymbolTab";
 import * as fs from 'fs';
+import * as net from 'net';
+import { parseCobolToString , parseStringToCobol } from "../utils/typeParseCob";
 
 export class MI2_COB extends MI2{
-	private Programs : Map< string , Program > = new Map();
-	private stackBreakpoint : Breakpoint[] = [];
-	private target : string ;
 
-	private syncBreakpoints : Map< number , string > = new Map() ;
-
-	private fileToPrograms : Map< string , Set<Program> > = new Map<string,Set<Program>>() ;
-
-	initCommands(target: string, cwd: string, attach: boolean = false){
+	protected initCommands(target: string, cwd: string, attach: boolean = false){
 
 		this.sendRaw("handle SIGTRAP nostop noprint ");
 		this.target = Path.basename(target).split(".")[0].toUpperCase();
@@ -25,8 +20,18 @@ export class MI2_COB extends MI2{
 				allSymbolsFilePath.push( cwd + file );
 		});	
 		this.loadPrograms( allSymbolsFilePath );
+		this.initCobClassTrace();
 
 		return super.initCommands(target,cwd,attach);
+	}
+
+	protected initCobClassTrace( ){
+		this.trace_pipe = net.createServer((stream)=>{
+			stream.on('data',(data)=>{
+				const info = JSON.parse(data.toString());
+				this.objectMap.set( parseInt( info.id ) , { name : info.name.toUpperCase() , type : info.type , address : parseInt(info.address) } );
+			});
+		}).listen("\\\\.\\pipe\\class_info");
 	}
 
 	addBreakPoint(breakpoint: Breakpoint): Thenable<[boolean, Breakpoint]> {
@@ -108,7 +113,7 @@ export class MI2_COB extends MI2{
 		return new Promise(()=>{
 			const newProgram = new Program( filePath );
 			for(let entry of newProgram.entrys.keys() ){
-				this.Programs.set( entry , newProgram);
+				this.programs.set( entry , newProgram);
 				this.addSyncBreakpoint( entry );
 			}
 			return newProgram;
@@ -121,7 +126,7 @@ export class MI2_COB extends MI2{
 			return this.loadProgram(filePath) ;
 		});
 		Promise.all(promisses).then(()=>{});
-		this.Programs.forEach((program)=>{
+		this.programs.forEach((program)=>{
 				program.copys.forEach(file=>{
 					if(!this.fileToPrograms.has(file)){
 						const set : Set<Program> = new Set();
@@ -136,8 +141,8 @@ export class MI2_COB extends MI2{
 	}
 
 	getProgramByAddress( address : number ) : string  {
-		for( let key of this.Programs.keys() ){
-			if( this.Programs.get( key ).isMe( address ) ){
+		for( let key of this.programs.keys() ){
+			if( this.programs.get( key ).isMe( address ) ){
 				return key ;
 			}
 		}
@@ -147,8 +152,9 @@ export class MI2_COB extends MI2{
 		const stack = super.getStack(startFrame,maxLevels,thread);
 		const promises = [] ;
 		(await stack).forEach(element=>{
-			this.Programs.forEach((program)=>{
+			this.programs.forEach((program)=>{
 				promises.push( new Promise(()=>{
+					this.sendCliCommand(`print (void)mF_eloc("gdb_trace.dll",13)`);
 					if(program.isMe( parseInt(element.address,16) )){
 						const fileAndLine = program.getFileAndLine( parseInt(element.address,16) );
 						element.fileName = Path.basename(fileAndLine.file);
@@ -195,11 +201,210 @@ export class MI2_COB extends MI2{
 		const entryName = this.syncBreakpoints.get( bkptNum );
 
 		const Address = parseInt( parsed.record("frame.addr") , 16) - 3 ;
-		const currProgram = this.Programs.get(entryName) ;
+		const currProgram = this.programs.get(entryName) ;
 		currProgram.setAddressBase( entryName , Address );
 		currProgram.breakpoints.clear() ;
 		this.loadBreakPoints( this.stackBreakpoint );
 		this.continue();
 	}
-	
+
+	async getBaseFrame( frame : number ){
+		let currFrame : number = 0 ;
+		let addrBaseFrame : number = parseInt((await this.sendCommand(`data-list-register-values x 5`)).result("register-values[0].value") , 16 );
+		while( currFrame != frame ){
+			currFrame++;
+			const newAddrBaseFrame : string = ((await this.sendCommand(`data-read-memory ${addrBaseFrame} x 4 1 1`)).result(`memory[0].data[0]`));
+			addrBaseFrame = parseInt( newAddrBaseFrame , 16 );
+		}
+		return addrBaseFrame ;
+	}
+
+	async testCobProgram( thread: number, frame: number ){
+		const address = parseInt((await this.sendCommand(`stack-list-frames --thread ${thread}`)).result(`stack.frame[${frame}].addr`),16);
+		const programName : string =  this.getProgramByAddress( address ) ;
+		return (programName)? true : false ;
+	}
+
+	async getProgramAndFunction( thread: number , level : number ) {
+		const address = parseInt((await this.sendCommand(`stack-list-frames --thread ${thread}`)).result(`stack.frame[${level}].addr`),16);
+		const programId : string =  this.getProgramByAddress( address ) ;
+		const program = this.programs.get( programId );
+		const functionId = program.getScope( address ).id ;
+		return { programId : programId , functionId : functionId , address : address  } ;
+	}
+
+	async getStackVariablesObject(thread: number, frame: number , scope : string = "local" ): Promise<VariableObjectCobol[]> {
+
+		const address = parseInt((await this.sendCommand(`stack-list-frames --thread ${thread}`)).result(`stack.frame[${frame}].addr`),16);
+		const programName : string =  this.getProgramByAddress( address ) ;
+		const baseFrame = await this.getBaseFrame( frame );		
+		
+		let ret: VariableObjectCobol[] = [];
+		if(programName){
+			const currentProgram = this.programs.get( programName );
+			const [ variables , functionName ]  = currentProgram.getScopeVariables( address , scope.toUpperCase() );
+			for(const key of variables){
+				const variable = currentProgram.getVariable(key,functionName,baseFrame);
+				if( variable != undefined ){
+					ret.push( await this.getVariableObject( variable , baseFrame ) );
+				}else{
+					throw (`"${key}" variavel nao encotrada `);
+				}
+			}
+		}
+		return ret;
+	}
+
+	async readVariable( type : string , address : number , lenght : number ) : Promise<string> {
+		let output : string ;
+		if( type == "" ){
+			output = "{...}" ;
+		}else if(/.*COMP-(1|2).*/.test(type)){
+			output = ((await this.sendCommand(`data-read-memory ${address} f ${lenght} 1 1`)).result(`memory[0].data[0]`));
+		}else if( /.*S.*COMP(-5|-X)*$/.test(type)){
+			output = ((await this.sendCommand(`data-read-memory ${address} d ${lenght} 1 1`)).result(`memory[0].data[0]`));
+		}else if(/.*COMP(-5|-X)*$/.test(type)){
+			output = ((await this.sendCommand(`data-read-memory ${address} u ${lenght} 1 1`)).result(`memory[0].data[0]`));
+		}else if(/.*POINTER.*/.test(type)){
+			output = ((await this.sendCommand(`data-read-memory ${address} x ${lenght} 1 1`)).result(`memory[0].data[0]`));
+		}else if(/.*OBJECT.*/.test(type)){
+			output = ((await this.sendCommand(`data-read-memory ${address} x ${lenght} 1 1`)).result(`memory[0].data[0]`)) ;	
+		}else{
+			const result = this.sendCommand(`data-read-memory-bytes ${address} ${lenght}`);
+			const value = (await result).result("memory[0].contents");
+			output = parseCobolToString( type , value );
+		}
+		return output ;
+	}
+
+	async getVariableObject( staticVariableInfo , memoryReference : number = 0 ) : Promise<VariableObjectCobol>{
+		let variable = new VariableObjectCobol();
+		if( staticVariableInfo ){
+						
+			const offset  = staticVariableInfo.isReference ? 0 : staticVariableInfo.offset ; 
+			const address = staticVariableInfo.memoryReference + offset ;
+			const isObject = /.*OBJECT.*/.test( staticVariableInfo.type ) ;
+
+			variable.name = staticVariableInfo.name ;
+			variable.exp  = staticVariableInfo.exp ;
+			variable.type = `${staticVariableInfo.type} : ${staticVariableInfo.lenght} byte(s)` ;
+
+			try{
+				if( staticVariableInfo.isReference ){
+					const valuePtr = parseInt( await this.readVariable( "POINTER" , address , 4 ) , 16 ) + staticVariableInfo.offset ;
+					if( isObject ){
+						this.sendCliCommand(`print (void)gdb_pipe_ref(${valuePtr})`);
+						variable.memoryReference = valuePtr ;
+					}
+					variable.value = ( !/.*GROUP.*/.test( variable.type ) )? await this.readVariable( staticVariableInfo.type , valuePtr , staticVariableInfo.lenght ) : "{...}" ;
+				}else{
+					if( isObject )this.sendCliCommand(`print (void)gdb_pipe_ref(${address})`);
+					variable.value = ( !/.*GROUP.*/.test( variable.type ) )? await this.readVariable( staticVariableInfo.type , address , staticVariableInfo.lenght ) : "{...}";
+				}
+				variable.numchild = staticVariableInfo.children ;
+				variable.memoryReference = memoryReference ;
+
+				if(isObject){
+					variable.objectReference = parseInt( variable.value , 16 ) ;
+					const info = this.objectMap.get( variable.objectReference );
+					const type = (info.type == "OBJECT")?"OBJ":"CLASS";
+					variable.value = `${type}::${info.name}(${variable.value})`;
+					variable.numchild = 1 ;
+				}
+			}catch(err){
+				variable.numchild = 0 ;
+				variable.value = `< address 0x${address.toString(16)} invalid >` ;
+				variable.memoryReference = 0 ;
+			}
+		}
+		return variable ;
+	}
+
+	async varCobListChildren( name :  string , threadId : number , level : number ): Promise<VariableObjectCobol[]> {
+		const omg: VariableObjectCobol[] = [] ;
+
+		const { programId , functionId } = await this.getProgramAndFunction( threadId , level );	
+		const baseFrame = await this.getBaseFrame( level );
+		
+		if( programId ){
+			const program = this.programs.get(programId);
+			const variables = program.getVariableChildren( name , functionId , programId ) ;
+			for(let key of variables ){
+				const children = program.getVariable(key , functionId , baseFrame );
+				if( children != undefined ){					
+					omg.push( await this.getVariableObject( children , baseFrame ) );
+				}else{
+					throw (`"${key}" variavel nao encotrada `);
+				}
+			}
+			return omg;
+		}else{
+			throw (`Error not found ${programId}`);
+		}
+	}
+
+	async getObjectReferenceInfo( hObject : number , attrExp : string = "LOCAL" ){
+		let allAttributes : VariableObjectCobol[] = [ ] ;
+		if( this.objectMap.has( hObject )){
+			const { name , type , address } = this.objectMap.get( hObject ) ;
+			const program = this.programs.get( name.toUpperCase() )
+			if( program && address ){
+				const attributes = program.getVariableChildren(attrExp,type,name).filter((attr)=>{ return (attr != "SELF" && attr != "SELFCLASS") });
+				for( let attr of attributes ){
+					const variable = program.getVariable( attr , type , address );
+					let varObj : VariableObjectCobol = await this.getVariableObject( variable , address ) ;
+					if( !varObj.objectReference )varObj.objectReference = hObject ;
+					allAttributes.push( varObj );
+				}
+			}
+		}
+		return allAttributes ;
+	}
+
+	private async resolveVariableAddress( name : string , programId : string , functionId : string , baseFrame : number ){
+		const program = this.programs.get( programId );
+		const nameUpper = name.toUpperCase() ;
+		const parentFunctionId = program.listSubProgram.get( functionId ).parent ;
+		if( parentFunctionId == "CLASSOBJECT" || parentFunctionId == "OBJECT" ){
+			const attrClass = program.listSubProgram.get( "CLASSOBJECT" ).variables;
+			const attrInstance = program.listSubProgram.get( "OBJECT" ).variables;
+			const isAttribute = ( attrClass.has( nameUpper ) || attrInstance.has( nameUpper ) ) ;
+			if( program.listSubProgram.get( parentFunctionId ).variables.has( nameUpper ) ){
+				const selfStaticInfo = program.getVariable( "SELF" , functionId , baseFrame );
+				const selfObject = this.getVariableObject( selfStaticInfo , baseFrame ) ;
+				const hObject = (await selfObject).objectReference ; 
+				return this.objectMap.get( hObject ).address ;
+			}else if( isAttribute ){
+				return undefined ;
+			}
+		}
+		return baseFrame ;
+	}
+
+	async evalCobVarExpr( name: string, thread: number, level: number , value : string | undefined = undefined ): Promise<VariableObjectCobol> {
+
+		const { programId , functionId } = await this.getProgramAndFunction( thread , level );	
+		const baseFrame = await this.getBaseFrame( level );
+
+		if(programId){
+			const program = this.programs.get( programId );
+			let memoryReference = await this.resolveVariableAddress( name.toUpperCase() , programId , functionId , baseFrame );
+			if( !memoryReference )
+				return new VariableObjectCobol() ;
+			const variable = program.getVariable( name.toUpperCase() , functionId , memoryReference );
+			if( variable != undefined ){
+				return await this.getVariableObject( variable , memoryReference );
+			}
+		}
+		return new VariableObjectCobol() ;
+	}
+
+
+	private programs : Map< string , Program > = new Map();
+	private stackBreakpoint : Breakpoint[] = [];
+	private target : string ;
+	private syncBreakpoints : Map< number , string > = new Map() ;
+	private fileToPrograms : Map< string , Set<Program> > = new Map<string,Set<Program>>() ;
+	private objectMap : Map< number , { name : string , type : string , address : number } > = new Map() ;
+	private trace_pipe : net.Server ;
 }
