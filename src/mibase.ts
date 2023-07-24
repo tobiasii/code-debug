@@ -1,11 +1,11 @@
 import * as DebugAdapter from 'vscode-debugadapter';
 import { DebugSession, InitializedEvent, TerminatedEvent, StoppedEvent, ThreadEvent, OutputEvent, ContinuedEvent, Thread, StackFrame, Scope, Source, Handles } from 'vscode-debugadapter';
 import { DebugProtocol } from 'vscode-debugprotocol';
-import { Breakpoint, IBackend, Variable, VariableObject, ValuesFormattingMode, MIError } from './backend/backend';
+import { Breakpoint, IBackend, Variable, VariableObject , VariableObjectCobol , ValuesFormattingMode, MIError } from './backend/backend';
 import { MINode } from './backend/mi_parse';
 import { expandValue, isExpandable } from './backend/gdb_expansion';
-import { MI2 } from './backend/mi2/mi2';
 import { execSync } from 'child_process';
+import { MI2_COB } from './backend/mi2/mi2cob';
 import * as systemPath from "path";
 import * as net from "net";
 import * as os from "os";
@@ -29,7 +29,7 @@ class VariableScope {
 export enum RunCommand { CONTINUE, RUN, NONE }
 
 export class MI2DebugSession extends DebugSession {
-	protected variableHandles = new Handles<VariableScope | string | VariableObject | ExtendedVariable>();
+	protected variableHandles = new Handles<VariableScope | string | VariableObject | VariableObjectCobol | ExtendedVariable>();
 	protected variableHandlesReverse: { [id: string]: number } = {};
 	protected scopeHandlesReverse: { [key: string]: number } = {};
 	protected useVarObjects: boolean;
@@ -41,7 +41,7 @@ export class MI2DebugSession extends DebugSession {
 	protected sourceFileMap: SourceFileMap;
 	protected started: boolean;
 	protected crashed: boolean;
-	protected miDebugger: MI2;
+	protected miDebugger: MI2_COB ;
 	protected commandServer: net.Server;
 	protected serverPath: string;
 
@@ -432,7 +432,7 @@ export class MI2DebugSession extends DebugSession {
 
 	protected override async variablesRequest(response: DebugProtocol.VariablesResponse, args: DebugProtocol.VariablesArguments): Promise<void> {
 		const variables: DebugProtocol.Variable[] = [];
-		const id: VariableScope | string | VariableObject | ExtendedVariable = this.variableHandles.get(args.variablesReference);
+		const id: VariableScope | string | VariableObject | ExtendedVariable | VariableObjectCobol = this.variableHandles.get(args.variablesReference);
 
 		const createVariable = (arg: string | VariableObject, options?: any) => {
 			if (options)
@@ -462,6 +462,21 @@ export class MI2DebugSession extends DebugSession {
 							value: reg.valueStr,
 							variablesReference: 0
 						});
+					}
+				} else if( await this.miDebugger.testCobProgram( id.threadId , id.level ) ){
+					try {
+						let stack: VariableObjectCobol[] = await this.miDebugger.getStackVariablesObject(id.threadId, id.level , id.name );
+						for (let variable of stack) {
+							variable.id = ( variable.numchild > 0 )? this.variableHandles.create( variable ) :  0 ;
+							variable.frameId = this.threadAndLevelToFrameId( id.threadId , id.level );
+							variables.push( variable.toProtocolVariable() );
+						}
+						response.body = {
+							variables: variables
+						};
+						this.sendResponse(response);
+					} catch (err) {
+						this.sendErrorResponse(response, 1, `Could not expand variable: ${err}`);
 					}
 				} else {
 					const stack: Variable[] = await this.miDebugger.getStackVariables(id.threadId, id.level);
@@ -522,6 +537,28 @@ export class MI2DebugSession extends DebugSession {
 								});
 						}
 					}
+					response.body = {
+						variables: variables
+					};
+					this.sendResponse(response);
+				}
+			} catch (err) {
+				this.sendErrorResponse(response, 1, `Could not expand variable: ${err}`);
+			}			
+		}else if( id instanceof VariableObjectCobol ){
+			const [threadId,level] = this.frameIdToThreadAndLevel( id.frameId );
+			try {
+				let children : VariableObjectCobol[] ;
+				if( id.objectReference ){
+					children = await this.miDebugger.getObjectReferenceInfo( id.objectReference , id.type.match(/.*OBJECT.*/)? "LOCAL" : id.name );
+				}else{
+					children = await this.miDebugger.varCobListChildren( id.name , threadId , level );
+				}
+
+				for (let variable of children) {
+					variable.id = ( variable.numchild > 0 )? this.variableHandles.create( variable ) :  0 ;
+					variable.frameId = id.frameId ;
+					variables.push( variable.toProtocolVariable() );
 				}
 				response.body = {
 					variables: variables
@@ -530,7 +567,7 @@ export class MI2DebugSession extends DebugSession {
 			} catch (err) {
 				this.sendErrorResponse(response, 1, `Could not expand variable: ${err}`);
 			}
-		} else if (typeof id == "string") {
+		}else if (typeof id == "string") {
 			// Variable members
 			let variable;
 			try {
@@ -708,14 +745,31 @@ export class MI2DebugSession extends DebugSession {
 	protected override evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
 		const [threadId, level] = this.frameIdToThreadAndLevel(args.frameId);
 		if (args.context == "watch" || args.context == "hover") {
-			this.miDebugger.evalExpression(args.expression, threadId, level).then((res) => {
-				response.body = {
-					variablesReference: 0,
-					result: res.result("value")
-				};
-				this.sendResponse(response);
-			}, msg => {
-				this.sendErrorResponse(response, 7, msg.toString());
+			this.miDebugger.testCobProgram( threadId , level ).then( result =>{
+				if( result ){
+					this.miDebugger.evalCobVarExpr(args.expression, threadId, level).then((variable) => {
+						variable.id = ( variable.numchild > 0 )? this.variableHandles.create( variable ) :  0 ;
+						variable.frameId = args.frameId ;
+						response.body = {
+							variablesReference: variable.id  ,
+							result: variable.value ,
+							type : variable.type 
+						};
+						this.sendResponse(response);
+					}, msg => {
+						this.sendErrorResponse(response, 7, msg.toString());
+					});
+				}else{
+					this.miDebugger.evalExpression(args.expression, threadId, level).then((res) => {
+						response.body = {
+							variablesReference: 0,
+							result: res.result("value")
+						};
+						this.sendResponse(response);
+					}, msg => {
+						this.sendErrorResponse(response, 7, msg.toString());
+					});
+				}
 			});
 		} else {
 			this.miDebugger.sendUserInput(args.expression, threadId, level).then(output => {

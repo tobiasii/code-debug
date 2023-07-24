@@ -136,6 +136,30 @@ export class VariableObject {
 	}
 }
 
+export class VariableObjectCobol {
+	name: string;
+	exp: string;
+	numchild: number;
+	type: string;
+	value: string;
+	frameId : number ;
+	id: number;
+
+	objectReference : number ;
+	memoryReference : number ;
+
+	public toProtocolVariable(): DebugProtocol.Variable {
+		const res: DebugProtocol.Variable = {
+			name: this.exp,
+			evaluateName: this.name,
+			value: (this.value === void 0) ? "<unknown>" : this.value,
+			type: this.type,
+			variablesReference: this.id
+		};
+		return res;
+	}
+}
+
 // from https://gist.github.com/justmoon/15511f92e5216fa2624b#gistcomment-1928632
 export interface MIError extends Error {
 	readonly name: string;
