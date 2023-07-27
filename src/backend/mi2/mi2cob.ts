@@ -399,6 +399,77 @@ export class MI2_COB extends MI2{
 		return new VariableObjectCobol() ;
 	}
 
+	async writeVariable( type : string , address : number , lenght : number , value : string ) : Promise<string> {
+		if(/.*COMP-(1|2).*/.test(type)){
+			const type = ( lenght == 4 )?"float":"double";
+			await this.sendCliCommand(`set {${type}}0x${address.toString(16)} = ${value}`);
+		}else if( /.*S.*COMP.*/.test(type)){
+			if( !/COMP-5/.test(type) ) this.sendCliCommand("set endian big");
+			await this.sendCommand(`data-write-memory ${address} d ${lenght} ${value}`);
+			if( !/COMP-5/.test(type) ) this.sendCliCommand("set endian little");
+		}else if(/.*COMP.*/.test(type)){
+			if( !/COMP-5/.test(type) ) this.sendCliCommand("set endian big");
+			await this.sendCommand(`data-write-memory ${address} u ${lenght} ${value} `);
+			if( !/COMP-5/.test(type) ) this.sendCliCommand("set endian little");
+		}else if(/.*POINTER.*/.test(type)){
+			await this.sendCommand(`data-write-memory ${address} x ${lenght} ${value}`);
+		}else if(/.*OBJECT.*/.test(type)){
+			if( /.*\((.*)\).*/.test(value) )
+				value = /.*\((.*)\).*/.exec( value )[1] ;
+			await this.sendCommand(`data-write-memory ${address} x ${lenght} ${value}`);
+		}else{
+			const parsed = parseStringToCobol( type , value );
+			this.sendCommand(`data-write-memory-bytes ${address} "${parsed}" ${lenght}`);
+		}
+		return this.readVariable( type , address , lenght ) ;
+	}
+
+	async setVariableObject( staticVariableInfo , value : string ) : Promise<string>{
+		if( staticVariableInfo ){
+			const offset  = staticVariableInfo.isReference ? 0 : staticVariableInfo.offset ; 
+			const address = staticVariableInfo.memoryReference + offset ;
+
+			try{
+				if( staticVariableInfo.isReference ){
+					const valuePtr = parseInt( await this.readVariable( "POINTER" , address , 4 ) , 16 ) + staticVariableInfo.offset ;
+					return await this.writeVariable( staticVariableInfo.type , valuePtr , staticVariableInfo.lenght , value );
+				}else{
+					return await this.writeVariable( staticVariableInfo.type , address , staticVariableInfo.lenght , value );
+				}
+			}catch(err){
+				return `< address 0x${address.toString(16)} invalid >` ;
+			}
+		}
+		return "" ;
+	}
+
+	async setObjectReferenceInfo( hObject : number , attr : string , value : string ) : Promise<string>{
+		const { name , type , address } = this.objectMap.get( hObject ) ;
+		const program = this.programs.get( name.toUpperCase() )
+
+		if( program && address ){
+			const variable = program.getVariable( attr.toUpperCase() , type , address );
+			return await this.setVariableObject( variable , value ) ;
+		}
+		return "not found" ;
+	}
+
+	async setCobVarExpr( name: string, thread: number, level: number , value : string | undefined = undefined , address : number = 0 ): Promise<string> {
+
+		const { programId , functionId } = await this.getProgramAndFunction( thread , level );
+		let memoryReference = (address)? address : await this.getBaseFrame( level );
+		if(programId){
+			const program = this.programs.get( programId );
+			memoryReference = await this.resolveVariableAddress( name , programId , functionId , memoryReference );
+			if( !memoryReference )
+				return "not availabe" ;
+			const variable = program.getVariable( name.toUpperCase() , functionId , memoryReference );
+			if( variable != undefined ){	
+				return await this.setVariableObject( variable , value );
+			}
+		}
+		return "not availabe" ;
+	}
 
 	private programs : Map< string , Program > = new Map();
 	private stackBreakpoint : Breakpoint[] = [];
