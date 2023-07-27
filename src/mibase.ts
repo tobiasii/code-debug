@@ -194,9 +194,44 @@ export class MI2DebugSession extends DebugSession {
 
 	protected override async setVariableRequest(response: DebugProtocol.SetVariableResponse, args: DebugProtocol.SetVariableArguments): Promise<void> {
 		try {
-			if (this.useVarObjects) {
+			let isCobol : boolean = false ;
+			const parent = this.variableHandles.get(args.variablesReference);
+			if( parent instanceof VariableScope ){
+				const [threadId, level] = this.frameIdToThreadAndLevel(parent.threadId);
+				isCobol = await this.miDebugger.testCobProgram( threadId , level );
+			}else if( parent instanceof VariableObjectCobol ){
+				isCobol = true ;
+			}
+
+			if(isCobol){
+				if( parent instanceof VariableScope){
+					this.miDebugger.setCobVarExpr( args.name , parent.threadId , parent.level , args.value ).then((result) => {
+						response.body = {
+							value : result 
+						};
+						this.sendResponse(response);
+					});
+				}else if( parent instanceof VariableObjectCobol && parent.objectReference ){
+					if( /^\(.*\)/.test( args.name ) ) args.name = parent.name + args.name ;
+					this.miDebugger.setObjectReferenceInfo(  parent.objectReference , args.name , args.value ).then((result) => {
+						response.body = {
+							value : result 
+						};
+						this.sendResponse(response);
+					});
+				}else if( parent instanceof VariableObjectCobol ){
+					const [threadId, level] = this.frameIdToThreadAndLevel(parent.frameId);
+					if( /^\(.*\)/.test( args.name ) ) args.name = parent.name + args.name ; 
+					this.miDebugger.setCobVarExpr( args.name , threadId , level , args.value , parent.memoryReference ).then((result) => {
+						response.body = {
+							value : result 
+						};
+						this.sendResponse(response);
+					});
+				}
+			}else if (this.useVarObjects) {
 				let name = args.name;
-				const parent = this.variableHandles.get(args.variablesReference);
+				
 				if (parent instanceof VariableScope) {
 					name = VariableScope.variableName(args.variablesReference, name);
 				} else if (parent instanceof VariableObject) {
@@ -207,13 +242,15 @@ export class MI2DebugSession extends DebugSession {
 				response.body = {
 					value: res.result("value")
 				};
+				this.sendResponse(response);
 			} else {
 				await this.miDebugger.changeVariable(args.name, args.value);
 				response.body = {
 					value: args.value
 				};
+				this.sendResponse(response);
 			}
-			this.sendResponse(response);
+			
 		} catch (err) {
 			this.sendErrorResponse(response, 11, `Could not continue: ${err}`);
 		}
@@ -745,8 +782,8 @@ export class MI2DebugSession extends DebugSession {
 	protected override evaluateRequest(response: DebugProtocol.EvaluateResponse, args: DebugProtocol.EvaluateArguments): void {
 		const [threadId, level] = this.frameIdToThreadAndLevel(args.frameId);
 		if (args.context == "watch" || args.context == "hover") {
-			this.miDebugger.testCobProgram( threadId , level ).then( result =>{
-				if( result ){
+			this.miDebugger.testCobProgram( threadId , level ).then( isCobol =>{
+				if( isCobol ){
 					this.miDebugger.evalCobVarExpr(args.expression, threadId, level).then((variable) => {
 						variable.id = ( variable.numchild > 0 )? this.variableHandles.create( variable ) :  0 ;
 						variable.frameId = args.frameId ;
@@ -790,7 +827,32 @@ export class MI2DebugSession extends DebugSession {
 		}
 	}
 
-	protected override gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments): void {
+	protected setExpressionRequest(response: DebugProtocol.SetExpressionResponse, args: DebugProtocol.SetExpressionArguments, request?: DebugProtocol.Request): void {
+		const [threadId, level] = this.frameIdToThreadAndLevel(args.frameId);
+		this.miDebugger.testCobProgram( threadId , level ).then(isCobol=>{
+			if( isCobol ){
+				this.miDebugger.setCobVarExpr(args.expression, threadId, level , args.value ).then((result) => {
+					response.body = {
+						value : result ,
+					};
+					this.sendResponse(response);
+				}, msg => {
+					this.sendErrorResponse(response, 7, msg.toString());
+				});
+			}else{
+				this.miDebugger.changeVariable(args.expression, args.value).then((result)=>{
+					response.body = {
+						value: args.value
+					};
+					this.sendResponse(response);
+				} , msg => {
+					this.sendErrorResponse(response, 7, msg.toString());
+				});
+			}
+		});
+	}
+
+	protected gotoTargetsRequest(response: DebugProtocol.GotoTargetsResponse, args: DebugProtocol.GotoTargetsArguments): void {
 		const path: string = this.isSSH ? this.sourceFileMap.toRemotePath(args.source.path) : args.source.path;
 		this.miDebugger.goto(path, args.line).then(done => {
 			response.body = {
