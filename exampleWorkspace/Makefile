@@ -16,7 +16,7 @@ DLL_LIST := $(patsubst %,$(BRANCH)/%,$(DLL_FILES))
 
 .PHONY: all
 
-all: $(BRANCH)/$(TARGET).exe $(DLL_LIST)
+all: $(BRANCH)/$(TARGET).exe $(DLL_LIST) $(BRANCH)/c_library.dll
 
 $(BRANCH)/%.exe: %.cbl
 	@echo "compiling $*.exe"
@@ -31,6 +31,11 @@ $(BRANCH)/%.dll: %.cbl
 	@echo $(CB_FLAGS) > VSCODE_DLL.DIR
 	@$(CCB) $*.cbl $(CBFLAGS_DLL) -O$(BRANCH)/$*.dll >> log.txt
 	@$(RM) VSCODE_DLL.DIR *.obj
+	@echo "successfully compiled"
+
+$(BRANCH)/c_library.dll: c_library.c
+	@echo "compiling c library"
+	@gcc -Wall -O0 -ggdb -shared -fPIC -m32 c_library.c -o $@
 	@echo "successfully compiled"
 
 clean:
