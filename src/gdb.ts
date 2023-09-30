@@ -52,6 +52,7 @@ class GDBDebugSession extends MI2DebugSession {
 		response.body.supportsSetExpression = true ;
 		response.body.supportsStepBack = true;
 		response.body.supportsLogPoints = true;
+		response.body.supportsDisassembleRequest = true ;
 		this.sendResponse(response);
 	}
 
@@ -158,6 +159,19 @@ class GDBDebugSession extends MI2DebugSession {
 		if (substitutions) {
 			Object.keys(substitutions).forEach(source => {
 				this.miDebugger.extraCommands.push("gdb-set substitute-path \"" + escape(source) + "\" \"" + escape(substitutions[source]) + "\"");
+			});
+		}
+	}
+
+	protected disassembleRequest(response: DebugProtocol.DisassembleResponse,args: DebugProtocol.DisassembleArguments) : void {
+		if( args.memoryReference !== undefined ){
+			this.miDebugger.getDisassembly(args.memoryReference).then( insts => {
+				let instructions : DebugProtocol.DisassembledInstruction[] = [] ;
+				insts.forEach( element => { instructions.push(element); });
+				response.body = {
+					instructions : instructions 
+				}
+				this.sendResponse(response);
 			});
 		}
 	}

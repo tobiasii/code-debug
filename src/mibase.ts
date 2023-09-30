@@ -355,12 +355,16 @@ export class MI2DebugSession extends DebugSession {
 					source = new Source(element.fileName, path);
 				}
 
-				ret.push(new StackFrame(
+				let stackFrame = new StackFrame(
 					this.threadAndLevelToFrameId(args.threadId, element.level),
 					element.function + "@" + element.address,
 					source,
 					element.line,
-					0));
+					0
+				);
+
+				stackFrame.instructionPointerReference = element.address ;
+				ret.push(stackFrame);
 			});
 			response.body = {
 				stackFrames: ret
