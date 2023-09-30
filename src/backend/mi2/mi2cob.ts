@@ -5,6 +5,7 @@ import { MI2 } from './mi2';
 import { Program } from "../cobolSymbolTab";
 import * as fs from 'fs';
 import * as net from 'net';
+import { DebugProtocol } from 'vscode-debugprotocol';
 import { parseCobolToString , parseStringToCobol } from "../utils/typeParseCob";
 
 export class MI2_COB extends MI2{
@@ -469,6 +470,32 @@ export class MI2_COB extends MI2{
 			}
 		}
 		return "not availabe" ;
+	}
+
+	async getDisassembly( memoryAddress : string ) : Promise< DebugProtocol.DisassembledInstruction[]> {
+		const dasm: DebugProtocol.DisassembledInstruction[] = [];
+
+		const memoryAddressNumber = parseInt(memoryAddress,16) ;
+		const programName = this.getProgramByAddress( memoryAddressNumber );
+		
+		if( programName ){
+			const program = this.programs.get( programName ) ;
+			const startAddrProgram = program.getAddressBase() ;
+			const endAddrProgram = startAddrProgram + program.codeSize ;
+			const startAddress = ( startAddrProgram > memoryAddressNumber - (4*16) ) ? startAddrProgram : ( memoryAddressNumber - (4*16) );
+			const endAddress   = ( endAddrProgram   < memoryAddressNumber + (4*32) ) ? endAddrProgram   : ( memoryAddressNumber + (4*32) ) ;
+
+			const result = this.sendCommand(`data-disassemble -s ${startAddress} -e ${endAddress} -- 0`) ;
+			
+			const insts = (await result).result("asm_insns") ;
+			insts.forEach( items => {
+
+				const address = items.filter( (element) => element[0] == "address" )[0][1];
+				const inst = items.filter( (element) => element[0] == "inst" )[0][1];
+				dasm.push({ address : address , instruction : inst });
+			});
+		}
+		return dasm ;
 	}
 
 	private programs : Map< string , Program > = new Map();
