@@ -53,10 +53,10 @@ export class Program{
 	private offsetLinkBase	: number = 0 ;
 	private offsetLocalBase : number = 0 ;
 	private hasLocalSection : boolean = false ;
-	
-	public breakpoints : Set<Breakpoint> = new Set() ;
 
-	constructor( debugFilesPath : string , private addressBase : number = 0 ,  log?){
+		public breakpoints : Set<Breakpoint> = new Set() ;
+
+	constructor( debugFilesPath : string , private addressBase : number = 0 ){
 
 		try{			
 			const tree = JSON.parse( fs.readFileSync( debugFilesPath ).toString() );

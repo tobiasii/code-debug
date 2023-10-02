@@ -248,8 +248,6 @@ export class MI2_COB extends MI2{
 				const variable = currentProgram.getVariable(key,functionName,baseFrame);
 				if( variable != undefined ){
 					ret.push( await this.getVariableObject( variable , baseFrame ) );
-				}else{
-					throw (`"${key}" variavel nao encotrada `);
 				}
 			}
 		}
@@ -498,6 +496,98 @@ export class MI2_COB extends MI2{
 		return dasm ;
 	}
 
+	clearAllTempBreakpoint(){
+		const promises = this.tempBreakpoints.map((bkptno)=>{
+			return new Promise((resolve)=>{ this.sendCommand(`break-delete ${bkptno.toString()}`).then(()=>{ resolve(true) }) }) ;
+		});
+		Promise.all(promises).catch(()=>{ throw("error ao remover breakpoint de temporario!!!") });
+		this.tempBreakpoints = [];
+	}
+
+	clearAllBoundBreakpoint(){
+		const promises = [] ;
+		this.boundBreakpoint.forEach((bkptno)=>{
+			promises.push( new Promise((resolve)=>{ this.sendCommand(`break-delete ${bkptno.toString()}`).then(()=>{ resolve(true) }) }) )
+		});
+		Promise.all(promises).catch(()=>{ throw("error ao remover breakpoint de borda!!!") });
+		this.boundBreakpoint.clear();
+	}
+
+	addPossibleLines( address : number , isStepIn : boolean = false ) : boolean {
+		const programName : string = this.getProgramByAddress( address ) ;
+		const program = this.programs.get( programName );
+		if( program ){
+			const promisses = [] ;
+			let [ steps , isBound ] = program.getStep( address , isStepIn );
+
+			if( !isBound ){
+				const boundAddress = program.getNearBound( address );
+				if( address == boundAddress ){
+					isBound = true
+				}else{
+					steps.forEach((stepAddress)=>{
+						promisses.push(
+							new Promise<boolean>((resolve)=>{
+								this.sendCommand(`break-insert -f *${stepAddress}`).then((result)=>{
+									const bkpId = parseInt( result.result("bkpt.number") );
+									this.tempBreakpoints.push( bkpId );
+									resolve(true);
+								});
+							})
+						);
+					});
+					this.sendCommand(`break-insert -f ${boundAddress}`).then((result)=>{
+						const bkpId = parseInt( result.result("bkpt.number") );
+						this.boundBreakpoint.add(bkpId);
+					});
+				}
+				if( isStepIn ){
+					//this.programs.forEach( pProgram => {
+					//	promisses.push( this.addAll )
+					//});
+				}
+			}
+			Promise.all( promisses );
+			return isBound ;
+		}
+		return true ;
+	}
+
+	private stepRaw( reverse : boolean = false , isStepIn : boolean ) : Thenable<boolean> {
+		return new Promise((resolve,reject)=>{
+			this.testCobProgram( -1 , 0 ).then((isCobol)=>{
+				if( isCobol ){
+					this.sendCommand(`stack-list-frames`).then((result)=>{
+						const address = parseInt( result.result(`stack.frame[0].addr`) , 16 );
+						if( this.addPossibleLines( address , isStepIn )){
+							this.sendCommand("exec-finish").then((info)=>{
+								resolve(info.resultRecords.resultClass == "running" );
+							},reject);
+						}else{
+							this.sendCommand("exec-continue").then((info)=>{
+								resolve(info.resultRecords.resultClass == "running" );
+							},reject);
+						}
+					});
+				}else{
+					if( isStepIn ){
+						super.step( reverse );
+					}else{
+						super.next( reverse );
+					}
+				}
+			});
+		});
+	}
+
+	next( reverse?: boolean): Thenable<boolean> {
+		return this.stepRaw( reverse , false );
+	}
+
+	step( reverse?: boolean): Thenable<boolean> {
+		return this.stepRaw( reverse , true );
+	}
+
 	private programs : Map< string , Program > = new Map();
 	private stackBreakpoint : Breakpoint[] = [];
 	private target : string ;
@@ -505,4 +595,7 @@ export class MI2_COB extends MI2{
 	private fileToPrograms : Map< string , Set<Program> > = new Map<string,Set<Program>>() ;
 	private objectMap : Map< number , { name : string , type : string , address : number } > = new Map() ;
 	private trace_pipe : net.Server ;
+
+	private tempBreakpoints : number[] = [] ;
+	private boundBreakpoint : Set<number> = new Set();
 }
