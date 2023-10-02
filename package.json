@@ -1099,6 +1099,7 @@
 		"prettier-check-docs": "prettier --check **/*.md"
 	},
 	"dependencies": {
+		"legacy-encoding": "^3.0.0",
 		"ssh2": "^1.6.0",
 		"vscode-debugadapter": "^1.45.0",
 		"vscode-debugprotocol": "^1.45.0"
