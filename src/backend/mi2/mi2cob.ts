@@ -30,7 +30,7 @@ export class MI2_COB extends MI2{
 		this.trace_pipe = net.createServer((stream)=>{
 			stream.on('data',(data)=>{
 				const info = JSON.parse(data.toString());
-				this.objectMap.set( parseInt( info.id ) , { name : info.name.toUpperCase() , type : info.type , address : parseInt(info.address) } );
+				this.objectMap.set( parseInt( info.id ) , { name : info.name.toUpperCase() , type : info.type , address : parseInt(info.address) , children : info.children } );
 			});
 		}).listen("\\\\.\\pipe\\class_info");
 	}
@@ -306,8 +306,7 @@ export class MI2_COB extends MI2{
 				if(isObject){
 					variable.objectReference = parseInt( variable.value , 16 ) ;
 					const info = this.objectMap.get( variable.objectReference );
-					const type = (info.type == "OBJECT")?"OBJ":"CLASS";
-					variable.value = `${type}::${info.name}(${variable.value})`;
+					variable.value = `${info.type}::${info.name}(${variable.value})`;
 					variable.numchild = 1 ;
 				}
 			}catch(err){
@@ -345,9 +344,27 @@ export class MI2_COB extends MI2{
 	async getObjectReferenceInfo( hObject : number , attrExp : string = "LOCAL" ){
 		let allAttributes : VariableObjectCobol[] = [ ] ;
 		if( this.objectMap.has( hObject )){
-			const { name , type , address } = this.objectMap.get( hObject ) ;
+			const { name , type , address , children } = this.objectMap.get( hObject ) ;
 			const program = this.programs.get( name.toUpperCase() )
-			if( program && address ){
+			if( children.length > 0 ){
+				for( let element of children ){
+					const subObject = this.objectMap.get( element.value );
+					let varObj =  new VariableObjectCobol();
+					varObj.exp = element.key ;
+					if( name.toUpperCase() != "CHARACTERARRAY" ){
+						varObj.objectReference = element.value ;
+						varObj.value = `${subObject.type}::${subObject.name}(${element.value})`;
+						varObj.type = "OBJECT" ;
+						varObj.numchild = (element.value == 0 && element.value == parseInt("0x20202020",16))? 0 : 1 ;
+					}else{
+						varObj.objectReference = hObject ;
+						varObj.type = "PIC X" ;
+						varObj.value = parseCobolToString( varObj.type , (element.value & 0xFF ).toString(16) ) ;
+						varObj.numchild = 0 ;
+					}
+					allAttributes.push( varObj );
+				}
+			}else if( program && address ){
 				const attributes = program.getVariableChildren(attrExp,type,name).filter((attr)=>{ return (attr != "SELF" && attr != "SELFCLASS") });
 				for( let attr of attributes ){
 					const variable = program.getVariable( attr , type , address );
@@ -593,7 +610,7 @@ export class MI2_COB extends MI2{
 	private target : string ;
 	private syncBreakpoints : Map< number , string > = new Map() ;
 	private fileToPrograms : Map< string , Set<Program> > = new Map<string,Set<Program>>() ;
-	private objectMap : Map< number , { name : string , type : string , address : number } > = new Map() ;
+	private objectMap : Map< number , { name : string , type : string , address : number , children? : { key : string  , value : number }[] } > = new Map() ;
 	private trace_pipe : net.Server ;
 
 	private tempBreakpoints : number[] = [] ;
