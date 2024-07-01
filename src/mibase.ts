@@ -529,7 +529,7 @@ export class MI2DebugSession extends DebugSession {
 								try {
 									const changes = await this.miDebugger.varUpdate(varObjName);
 									const changelist = changes.result("changelist");
-									changelist.forEach((change: any) => {
+									changelist.forEach((change:any) => {
 										const name = MINode.valueOf(change, "name");
 										const vId = this.variableHandlesReverse[name];
 										const v = this.variableHandles.get(vId) as any;
